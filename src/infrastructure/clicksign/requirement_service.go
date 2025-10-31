@@ -30,11 +30,14 @@ func (s *RequirementService) CreateRequirement(ctx context.Context, envelopeID s
 
 	// Fazer chamada para API do Clicksign usando o endpoint correto para requisitos
 	endpoint := fmt.Sprintf("/api/v3/envelopes/%s/requirements", envelopeID)
-	resp, err := s.clicksignClient.Post(ctx, endpoint, createRequest)
+    resp, err := s.clicksignClient.Post(ctx, endpoint, createRequest)
 
 	if err != nil {
-		// Log the error with more context
-		return "", fmt.Errorf("failed to create requirement in Clicksign envelope: %w", err)
+        if ce, ok := err.(*ClicksignError); ok {
+            return "", ce
+        }
+        // Log the error with more context
+        return "", fmt.Errorf("failed to create requirement in Clicksign envelope: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -45,23 +48,22 @@ func (s *RequirementService) CreateRequirement(ctx context.Context, envelopeID s
 	}
 
 	// Verificar se houve erro na resposta
-	if resp.StatusCode >= 400 {
-		var errorResp dto.ClicksignErrorResponse
-		if err := json.Unmarshal(body, &errorResp); err != nil {
-			return "", fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
-		}
-
-		if errorResp.Error.Type == "" && errorResp.Error.Message == "" {
-			return "", fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
-		}
-		return "", fmt.Errorf("Clicksign API error: %s - %s", errorResp.Error.Type, errorResp.Error.Message)
-	}
+    if resp.StatusCode >= 400 {
+        var errorResp dto.ClicksignErrorResponse
+        // tentar decodificar, mas ignorar falhas (queremos preservar body cru na mensagem)
+        _ = json.Unmarshal(body, &errorResp)
+        return "", &ClicksignError{
+            Type:       s.categorizeHTTPError(resp.StatusCode),
+            Message:    fmt.Sprintf("Clicksign API error (status %d): %s", resp.StatusCode, string(body)),
+            StatusCode: resp.StatusCode,
+        }
+    }
 
 	// Fazer parse da resposta de sucesso usando estrutura JSON API
 	var createResponse dto.RequirementCreateResponseWrapper
-	if err := json.Unmarshal(body, &createResponse); err != nil {
-		return "", fmt.Errorf("failed to parse JSON API response from Clicksign: %w", err)
-	}
+    if err := json.Unmarshal(body, &createResponse); err != nil {
+        return "", &ClicksignError{Type: ErrorTypeSerialization, Message: "failed to parse JSON API response from Clicksign", Original: err}
+    }
 
 	return createResponse.Data.ID, nil
 }
@@ -73,9 +75,12 @@ func (s *RequirementService) CreateBulkRequirements(ctx context.Context, envelop
 
 	// Fazer chamada para API do Clicksign usando o endpoint de bulk requirements
 	endpoint := fmt.Sprintf("/api/v3/envelopes/%s/bulk_requirements", envelopeID)
-	resp, err := s.clicksignClient.Post(ctx, endpoint, bulkRequest)
+    resp, err := s.clicksignClient.Post(ctx, endpoint, bulkRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create bulk requirements in Clicksign envelope: %w", err)
+        if ce, ok := err.(*ClicksignError); ok {
+            return nil, ce
+        }
+        return nil, fmt.Errorf("failed to create bulk requirements in Clicksign envelope: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -86,23 +91,19 @@ func (s *RequirementService) CreateBulkRequirements(ctx context.Context, envelop
 	}
 
 	// Verificar se houve erro na resposta
-	if resp.StatusCode >= 400 {
-		var errorResp dto.ClicksignErrorResponse
-		if err := json.Unmarshal(body, &errorResp); err != nil {
-			return nil, fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
-		}
-
-		if errorResp.Error.Type == "" && errorResp.Error.Message == "" {
-			return nil, fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
-		}
-		return nil, fmt.Errorf("Clicksign API error: %s - %s", errorResp.Error.Type, errorResp.Error.Message)
-	}
+    if resp.StatusCode >= 400 {
+        return nil, &ClicksignError{
+            Type:       s.categorizeHTTPError(resp.StatusCode),
+            Message:    fmt.Sprintf("Clicksign API error (status %d): %s", resp.StatusCode, string(body)),
+            StatusCode: resp.StatusCode,
+        }
+    }
 
 	// Fazer parse da resposta de sucesso usando estrutura JSON API para bulk operations
 	var bulkResponse dto.BulkRequirementsResponseWrapper
-	if err := json.Unmarshal(body, &bulkResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON API bulk response from Clicksign: %w", err)
-	}
+    if err := json.Unmarshal(body, &bulkResponse); err != nil {
+        return nil, &ClicksignError{Type: ErrorTypeSerialization, Message: "failed to parse JSON API bulk response from Clicksign", Original: err}
+    }
 
 	// Extrair IDs dos requisitos criados
 	var createdIDs []string
@@ -218,6 +219,20 @@ func (s *RequirementService) mapBulkOperationsToBulkRequest(operations []BulkOpe
 	return &dto.BulkRequirementsRequestWrapper{
 		AtomicOperations: atomicOps,
 	}
+}
+
+// categorizeHTTPError categoriza erros baseados no status code HTTP
+func (s *RequirementService) categorizeHTTPError(statusCode int) string {
+    switch {
+    case statusCode == 401 || statusCode == 403:
+        return ErrorTypeAuthentication
+    case statusCode >= 400 && statusCode < 500:
+        return ErrorTypeClient
+    case statusCode >= 500:
+        return ErrorTypeServer
+    default:
+        return ErrorTypeClient
+    }
 }
 
 // RequirementData representa os dados necessários para criar um requisito

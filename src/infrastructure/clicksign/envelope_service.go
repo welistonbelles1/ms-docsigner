@@ -32,6 +32,10 @@ func (s *EnvelopeService) CreateEnvelope(ctx context.Context, envelope *entity.E
 	// Fazer chamada para API do Clicksign
 	resp, err := s.clicksignClient.Post(ctx, "/api/v3/envelopes", createRequest)
 	if err != nil {
+		// Se já veio um ClicksignError do client, apenas propaga
+		if ce, ok := err.(*ClicksignError); ok {
+			return "", "", ce
+		}
 		return "", "", fmt.Errorf("failed to create envelope in Clicksign: %w", err)
 	}
 	defer resp.Body.Close()
@@ -45,14 +49,13 @@ func (s *EnvelopeService) CreateEnvelope(ctx context.Context, envelope *entity.E
 	// Verificar se houve erro na resposta
 	if resp.StatusCode >= 400 {
 		var errorResp dto.ClicksignErrorResponse
-		if err := json.Unmarshal(body, &errorResp); err != nil {
-			return "", "", fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
+		_ = json.Unmarshal(body, &errorResp)
+		// Retorna ClicksignError preservando status code
+		return "", "", &ClicksignError{
+			Type:       s.categorizeHTTPError(resp.StatusCode),
+			Message:    fmt.Sprintf("Clicksign API error (status %d): %s", resp.StatusCode, string(body)),
+			StatusCode: resp.StatusCode,
 		}
-
-		if errorResp.Error.Type == "" && errorResp.Error.Message == "" {
-			return "", "", fmt.Errorf("Clicksign API error (status %d): %s", resp.StatusCode, string(body))
-		}
-		return "", "", fmt.Errorf("Clicksign API error: %s - %s", errorResp.Error.Type, errorResp.Error.Message)
 	}
 
 	// Preservar dados brutos antes do parse
@@ -61,10 +64,24 @@ func (s *EnvelopeService) CreateEnvelope(ctx context.Context, envelope *entity.E
 	// Fazer parse da resposta de sucesso usando estrutura JSON API
 	var createResponse dto.EnvelopeCreateResponseWrapper
 	if err := json.Unmarshal(body, &createResponse); err != nil {
-		return "", "", fmt.Errorf("failed to parse JSON API response from Clicksign: %w", err)
+		return "", "", &ClicksignError{Type: ErrorTypeSerialization, Message: "failed to parse JSON API response from Clicksign", Original: err}
 	}
 
 	return createResponse.Data.ID, rawData, nil
+}
+
+// categorizeHTTPError categoriza erros baseados no status code HTTP
+func (s *EnvelopeService) categorizeHTTPError(statusCode int) string {
+	switch {
+	case statusCode == 401 || statusCode == 403:
+		return ErrorTypeAuthentication
+	case statusCode >= 400 && statusCode < 500:
+		return ErrorTypeClient
+	case statusCode >= 500:
+		return ErrorTypeServer
+	default:
+		return ErrorTypeClient
+	}
 }
 
 func (s *EnvelopeService) GetEnvelope(ctx context.Context, clicksignKey string) (*dto.EnvelopeGetResponse, error) {

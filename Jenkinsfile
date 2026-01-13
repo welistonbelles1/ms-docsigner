@@ -64,7 +64,7 @@ pipeline {
         stage('build Container Register Homologation') {
             when {
                 expression {
-                    return env.GIT_BRANCH == 'master'
+                    return env.GIT_BRANCH == 'homolog'
                 }
             }
 
@@ -112,7 +112,7 @@ pipeline {
         stage('Deploy to Staging Environment') {
             when {
                 expression {
-                    return env.GIT_BRANCH == 'master'
+                    return env.GIT_BRANCH == 'develop'
                 }
             }
 
@@ -130,7 +130,7 @@ pipeline {
         stage('Deploy to Homolog Environment') {
             when {
                 expression {
-                    return env.GIT_BRANCH == 'master'
+                    return env.GIT_BRANCH == 'homolog'
                 }
             }
 

@@ -27,7 +27,7 @@ type Base64FileInfo struct {
 // ValidateBase64 valida se a string é um base64 válido
 func ValidateBase64(data string) error {
 	if len(data) == 0 {
-		return errors.New("conteúdo base64 não pode estar vazio ou nulo")
+		return errors.New("conteúdo base64 não pode estar vazio")
 	}
 
 	if len(data) > MaxBase64Size {
